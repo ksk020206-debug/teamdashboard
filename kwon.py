@@ -87,3 +87,60 @@ table[["수입", "수출", "환적", "합계"]] = (
 table["순위"] = table["순위"].astype(str) + "위"
 
 st.dataframe(table, hide_index=True, width="stretch")
+
+
+#######  데이터프레임
+
+import pandas as pd
+import streamlit as st
+
+
+
+
+df = pd.read_csv("data/data2025.csv", encoding="utf-8-sig")
+df["물동량"] = df["적"] + df["공"]
+
+year = st.selectbox("연도", sorted(df["연도"].unique(), reverse=True))
+table = (
+    df[df["연도"] == year]
+    .pivot_table(
+        index="국가명",
+        columns="구분",
+        values="물동량",
+        aggfunc="sum",
+        fill_value=0,
+    )
+    .reindex(columns=["입항", "출항", "환적"], fill_value=0)
+    .rename(columns={"입항": "수입", "출항": "수출"})
+    .reset_index()
+)
+
+table["수출입"] = table["수입"] + table["수출"]
+table["합계"] = table["수출입"] + table["환적"]
+table["합계 비중"] = table["합계"] / table["합계"].sum() * 100
+
+# 합계가 큰 나라부터 처음 표시하고, 그 순위를 고정
+table = table.sort_values("합계", ascending=False).reset_index(drop=True)
+table.insert(0, "순위", range(1, len(table) + 1))
+table = table.rename(columns={"국가명": "국가"})
+
+st.subheader(f"{year}년 국가별 전체 표")
+st.caption("열 제목을 누르면 해당 열 기준으로 정렬됩니다.")
+
+숫자열 = ["수입", "수출", "수출입", "환적", "합계"]
+table[숫자열] = table[숫자열].round(0).astype(int)
+
+st.dataframe(
+    table[["순위", "국가", "수입", "수출", "수출입", "환적", "합계", "합계 비중"]],
+    hide_index=True,
+    width="stretch",
+    height=650,
+    column_config={
+        "합계 비중": st.column_config.ProgressColumn(
+            "합계 비중",
+            min_value=0,
+            max_value=100,
+            format="%.1f%%",
+        ),
+    },
+)
