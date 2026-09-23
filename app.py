@@ -36,9 +36,10 @@ DATA_CANDIDATES = [
     BASE_DIR / "data" / "data2025.csv",
 ]
 DATA_PATH = next((p for p in DATA_CANDIDATES if p.exists()), DATA_CANDIDATES[0])
-DASHBOARD_HEIGHT = 2550  # 화면이 잘리면 이 값을 늘리세요 (px)
+DASHBOARD_HEIGHT = 3000  # 화면이 잘리면 이 값을 늘리세요 (px)
 
 DEFAULT_COUNTRY = "말레이시아"  # kwon.py의 기본 선택 국가 (데이터에 없으면 1위 국가)
+TOP5_EXCLUDE = ["중국", "미국", "일본"]  # 상위 5개국 추이 그래프에서 제외할 국가
 GROWTH_MIN_TEU = 10_000  # codes/sk.py 기준: 증가율 Top 10은 시작·끝 연도 모두 1만 TEU 이상인 국가만
 REQUIRED_COLUMNS = ["연도", "국가명", "구분", "계"]  # data2025.csv에서 사용하는 열
 
@@ -95,6 +96,7 @@ HTML_TEMPLATE = r"""<!doctype html>
   --accent:#1c5cab; --accent-wash:#e3edfa;
   --s1:#2a78d6; --s2:#eb6834;
   --pos:#2a78d6; --neg:#e34948;
+  --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100; --c5:#e87ba4;
   --up:#006300; --down:#b42f2f;
   --shadow:0 1px 2px rgba(16,32,56,.06),0 4px 16px rgba(16,32,56,.05);
 }
@@ -106,6 +108,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     --accent:#86b6ef; --accent-wash:#1b2a3d;
     --s1:#3987e5; --s2:#d95926;
     --pos:#3987e5; --neg:#e66767;
+    --c1:#3987e5; --c2:#d95926; --c3:#199e70; --c4:#c98500; --c5:#d55181;
     --up:#0ca30c; --down:#e66767;
     --shadow:none;
   }
@@ -161,6 +164,7 @@ button:focus-visible,select:focus-visible{outline:2px solid var(--accent); outli
 .chart .base{stroke:var(--axis); stroke-width:1}
 .chart .hit{fill:transparent; cursor:pointer}
 .chart .dim{opacity:.38}
+.legend .lg{cursor:pointer} .legend .lg b{font-weight:600; color:var(--ink)}
 
 .detail-head,.card-head{display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap}
 select{font:inherit; font-size:13px; color:var(--ink); background:var(--bg); border:1px solid var(--ring); border-radius:8px; padding:6px 10px}
@@ -268,6 +272,21 @@ select{font:inherit; font-size:13px; color:var(--ink); background:var(--bg); bor
   </div>
 
   <section class="card">
+    <div class="card-head">
+      <div>
+        <h2 id="t5Title"></h2>
+        <p class="hint" id="t5Hint"></p>
+      </div>
+      <div class="seg sm" id="t5Seg" role="group" aria-label="그래프 단위">
+        <button type="button" id="t5abs">물동량(TEU)</button>
+        <button type="button" id="t5idx"></button>
+      </div>
+    </div>
+    <div class="legend" id="t5Legend"></div>
+    <div class="chart" id="cTop5"></div>
+  </section>
+
+  <section class="card">
     <h2 id="tblTitle"></h2>
     <p class="hint">열 제목을 누르면 정렬되고, 행을 누르면 국가 상세가 바뀝니다.</p>
     <div class="tblwrap"><table class="tbl" id="tbl"></table></div>
@@ -297,14 +316,20 @@ const idx={}; YEARS.forEach(y=>{idx[y]=new Map(byYear[y].map(r=>[r.n,r]));});
 const ZERO=(y,n)=>({y,n,im:0,ex:0,ts:0,ie:0,tot:0});
 const find=(y,n)=>idx[y].get(n)||null;
 const totals={}; YEARS.forEach(y=>{const t={im:0,ex:0,ts:0,ie:0,tot:0}; byYear[y].forEach(r=>{for(const k in t)t[k]+=r[k]}); totals[y]=t;});
+// 전체 누적: 모든 연도를 국가별로 합친 가상의 연도 'ALL'
+(()=>{const m=new Map(); rows.forEach(r=>{const a=m.get(r.n)||{y:'ALL',n:r.n,im:0,ex:0,ts:0,ie:0,tot:0}; for(const k of ['im','ex','ts','ie','tot'])a[k]+=r[k]; m.set(r.n,a);});
+  byYear.ALL=[...m.values()]; idx.ALL=m; const t={im:0,ex:0,ts:0,ie:0,tot:0}; byYear.ALL.forEach(r=>{for(const k in t)t[k]+=r[k]}); totals.ALL=t;})();
+const yLabel=y=>y==='ALL'?`${FIRST}~${LAST}년 누적`:`${y}년`;
+// 중국·미국·일본 제외 누적 합계 상위 5개국
+const TOP5=[...byYear.ALL].filter(r=>!CFG.top5Exclude.includes(r.n)).sort((a,b)=>b.tot-a.tot).slice(0,5).map(r=>r.n);
 // 합계가 같으면 같은 순위 (kwon.py의 rank(method="min")와 동일)
 const rankIn=(y,n,k='tot')=>{const r=find(y,n); if(!r) return null; return 1+byYear[y].filter(x=>x[k]>r[k]).length;};
 const countries=[...new Set(rows.map(r=>r.n))].sort((a,b)=>((find(LAST,b)||{tot:0}).tot)-((find(LAST,a)||{tot:0}).tot));
 
 const startCountry=countries.includes(CFG.defaultCountry)?CFG.defaultCountry:countries[0];
-let state={year:LAST, meas:'tot', country:startCountry, growth:'vol', sortKey:'tot', sortDir:-1};
-try{const s=JSON.parse(localStorage.getItem('bp-team-dash')||'null'); if(s&&YEARS.includes(s.year)&&MEAS[s.meas]&&countries.includes(s.country)&&['vol','rate'].includes(s.growth)) state={...state,...s};}catch(e){}
-function save(){try{localStorage.setItem('bp-team-dash',JSON.stringify({year:state.year,meas:state.meas,country:state.country,growth:state.growth}))}catch(e){}}
+let state={year:LAST, meas:'tot', country:startCountry, growth:'vol', t5:'abs', sortKey:'tot', sortDir:-1};
+try{const s=JSON.parse(localStorage.getItem('bp-team-dash')||'null'); if(s&&(YEARS.includes(s.year)||s.year==='ALL')&&MEAS[s.meas]&&countries.includes(s.country)&&['vol','rate'].includes(s.growth)&&['abs','idx'].includes(s.t5)) state={...state,...s};}catch(e){}
+function save(){try{localStorage.setItem('bp-team-dash',JSON.stringify({year:state.year,meas:state.meas,country:state.country,growth:state.growth,t5:state.t5}))}catch(e){}}
 
 const nf=new Intl.NumberFormat('ko-KR',{maximumFractionDigits:0});
 const man=v=>v>=10000? (Math.round(v/1000)/10).toLocaleString('ko-KR',{maximumFractionDigits:1})+'만' : nf.format(v);
@@ -339,7 +364,7 @@ function bindTip(node,fn){node.addEventListener('pointerenter',e=>fn(e)); node.a
 function buildFilters(){
   document.getElementById('subText').textContent=`${FIRST}~${LAST}년, 상대국 기준 컨테이너 처리실적. 단위는 TEU, 연도와 지표에 따라 차트 변경.`;
   const ys=document.getElementById('yearSeg'); ys.innerHTML='';
-  YEARS.forEach(y=>{const b=document.createElement('button'); b.type='button'; b.textContent=y; b.id='y'+y; b.onclick=()=>{state.year=y; renderAll();}; ys.appendChild(b);});
+  ['ALL',...YEARS].forEach(y=>{const b=document.createElement('button'); b.type='button'; b.textContent=y==='ALL'?'전체 누적':y; b.id='y'+y; b.onclick=()=>{state.year=y; renderAll();}; ys.appendChild(b);});
   const ms=document.getElementById('measSeg'); ms.innerHTML='';
   Object.values(MEAS).forEach(m=>{const b=document.createElement('button'); b.type='button'; b.textContent=m.n; b.id='m'+m.k; b.onclick=()=>{state.meas=m.k; renderAll();}; ms.appendChild(b);});
   const sel=document.getElementById('countrySel'); sel.innerHTML='';
@@ -348,14 +373,17 @@ function buildFilters(){
   document.getElementById('gvol').onclick=()=>{state.growth='vol'; renderAll();};
   document.getElementById('grate').onclick=()=>{state.growth='rate'; renderAll();};
   document.getElementById('minNote').textContent=nf.format(CFG.growthMin);
+  document.getElementById('t5idx').textContent=`성장 지수(${FIRST}=100)`;
+  document.getElementById('t5abs').onclick=()=>{state.t5='abs'; renderTop5();};
+  document.getElementById('t5idx').onclick=()=>{state.t5='idx'; renderTop5();};
 }
 
 function renderKPIs(){
-  const y=state.year, t=totals[y], p=totals[y-1];
-  const none=`<span>${FIRST}년은 비교 기준이 없습니다</span>`;
+  const y=state.year, t=totals[y], p=y==='ALL'?null:totals[y-1];
+  const none= y==='ALL' ? `<span>${YEARS.length}개년 합계</span>` : `<span>${FIRST}년은 비교 기준이 없습니다</span>`;
   const d=k=>{ if(!p) return none; const g=t[k]/p[k]-1; return `전년 대비 <b class="${g>=0?'up':'down'}">${g>=0?'▲':'▼'} ${sgn(g)}</b>`;};
   const k=[
-    {l:`${y}년 총 물동량`,v:man(t.tot),u:'TEU',d:d('tot'),hero:true},
+    {l:`${yLabel(y)} 총 물동량`,v:man(t.tot),u:'TEU',d:d('tot'),hero:true},
     {l:'수입',v:man(t.im),u:'TEU',d:d('im')},
     {l:'수출',v:man(t.ex),u:'TEU',d:d('ex')},
     {l:'환적',v:man(t.ts),u:'TEU',d:d('ts')},
@@ -372,10 +400,10 @@ function renderYearChart(){
   for(let i=0;i<=5;i++){const v=max/5*i, yy=ys(v); el('line',{x1:m.l,x2:W-m.r,y1:yy,y2:yy,class:i?'gl':'base'},svg); txt(svg,m.l-8,yy+4,v?axisLabel(v):'0',{class:'tick','text-anchor':'end'});}
   const band=iw/YEARS.length, bw=Math.min(40,band*.5);
   YEARS.forEach((y,i)=>{
-    const t=totals[y], x=m.l+band*i+(band-bw)/2, g=el('g',{class:y===state.year?'':'dim'},svg);
+    const t=totals[y], x=m.l+band*i+(band-bw)/2, g=el('g',{class:(state.year==='ALL'||y===state.year)?'':'dim'},svg);
     el('rect',{x,y:ys(t.ie),width:bw,height:(t.ie/max)*ih,fill:css('--s1')},g);
     el('path',{d:barPath(x,ys(t.tot),bw,Math.max(0,(t.ts/max)*ih-2),'up'),fill:css('--s2')},g);
-    txt(svg,x+bw/2,ys(t.tot)-7,man(t.tot),{class:'val','text-anchor':'middle',opacity:y===state.year?1:.6});
+    txt(svg,x+bw/2,ys(t.tot)-7,man(t.tot),{class:'val','text-anchor':'middle',opacity:(state.year==='ALL'||y===state.year)?1:.6});
     txt(svg,x+bw/2,H-8,y,{class:'tick','text-anchor':'middle'});
     const hit=el('rect',{x:m.l+band*i,y:m.t,width:band,height:ih,class:'hit'},svg);
     hit.addEventListener('click',()=>{state.year=y; renderAll();});
@@ -386,7 +414,7 @@ function renderYearChart(){
 function renderRank(){
   const host=document.getElementById('cRank'); host.innerHTML='';
   const k=state.meas, y=state.year, N=15;
-  document.getElementById('rankTitle').textContent=`${y}년 ${MEAS[k].n} 상위 ${N}개국`;
+  document.getElementById('rankTitle').textContent=`${yLabel(y)} ${MEAS[k].n} 상위 ${N}개국`;
   document.getElementById('rankLegend').innerHTML = k==='tot'? '<span><i style="background:var(--s1)"></i>수출입</span><span><i style="background:var(--s2)"></i>환적</span>' : '';
   const data=[...byYear[y]].sort((a,b)=>b[k]-a[k]).slice(0,N);
   const W=Math.max(300,host.clientWidth), row=26, m={t:4,r:58,b:4,l:92}, H=m.t+m.b+row*data.length;
@@ -479,7 +507,7 @@ function renderDetail(){
 
 function renderTable(){
   const y=state.year, tt=totals[y];
-  document.getElementById('tblTitle').textContent=`${y}년 국가별 전체 표 (${byYear[y].length}개국)`;
+  document.getElementById('tblTitle').textContent=`${yLabel(y)} 국가별 전체 표 (${byYear[y].length}개국)`;
   const cols=[['rank','순위'],['n','국가'],['im','수입'],['ex','수출'],['ie','수출입'],['ts','환적'],['tot','합계'],['share','합계 비중']];
   const list=byYear[y].map(r=>({...r,rank:rankIn(y,r.n),share:r.tot/tt.tot}));
   const sk=state.sortKey, dir=state.sortDir;
@@ -494,14 +522,62 @@ function renderTable(){
   t.querySelectorAll('tbody tr[data-n]').forEach(tr=>tr.onclick=()=>{state.country=tr.dataset.n; renderAll();});
 }
 
+// 중국·미국·일본 제외 물동량 상위 5개국의 연도별 추이 (물동량 / 성장 지수)
+function niceStep(raw){const p=Math.pow(10,Math.floor(Math.log10(raw))); return [1,2,2.5,5,10].find(m=>m*p>=raw)*p;}
+function renderTop5(){
+  const host=document.getElementById('cTop5'); host.innerHTML='';
+  const idxMode=state.t5==='idx', L=YEARS.length-1;
+  document.querySelectorAll('#t5Seg button').forEach(b=>b.setAttribute('aria-pressed',b.id===(idxMode?'t5idx':'t5abs')));
+  document.getElementById('t5Title').textContent=`${CFG.top5Exclude.join('·')} 제외 물동량 상위 5개국 연도별 추이`;
+  document.getElementById('t5Hint').textContent= idxMode
+    ? `${FIRST}년 물동량을 100으로 놓고 비교한 성장 지수입니다. 100보다 높으면 ${FIRST}년보다 늘어난 것입니다.`
+    : `${FIRST}~${LAST}년 누적 합계(수입+수출+환적) 기준 상위 5개국입니다. 이름을 누르면 국가 상세가 바뀝니다.`;
+  const colors=[1,2,3,4,5].map(i=>css('--c'+i));
+  const series=TOP5.map((n,i)=>{const raw=YEARS.map(y=>(find(y,n)||ZERO(y,n)).tot); const v0=raw[0]||1;
+    return {n,c:colors[i],raw,v:idxMode?raw.map(x=>x/v0*100):raw,g:raw[L]/v0-1};});
+  document.getElementById('t5Legend').innerHTML=series.map(s=>`<span class="lg" data-n="${s.n}"><i style="background:${s.c}"></i>${s.n} <b>${sgn(s.g)}</b></span>`).join('');
+  document.querySelectorAll('#t5Legend .lg').forEach(e=>e.onclick=()=>{state.country=e.dataset.n; renderAll();});
+  const W=Math.max(300,host.clientWidth), H=W<500?250:300, m={t:16,r:W<500?80:118,b:26,l:48};
+  const svg=el('svg',{viewBox:`0 0 ${W} ${H}`,role:'img','aria-label':'상위 5개국 연도별 추이'},host);
+  const all=series.flatMap(s=>s.v), iw=W-m.l-m.r, ih=H-m.t-m.b;
+  let lo,hi,step;
+  if(idxMode){ step=niceStep((Math.max(...all)-Math.min(...all,100))/4||10); lo=Math.floor(Math.min(...all,100)/step)*step; hi=Math.ceil(Math.max(...all,100)/step)*step; }
+  else { hi=niceMax(Math.max(...all),4); lo=0; step=hi/4; }
+  const xs=i=>m.l+(iw/L)*i, ys=v=>m.t+ih-((v-lo)/(hi-lo))*ih;
+  for(let v=lo; v<=hi+1e-9; v+=step){const yy=ys(v); el('line',{x1:m.l,x2:W-m.r,y1:yy,y2:yy,class:(idxMode?Math.abs(v-100)<1e-9:v===0)?'base':'gl'},svg);
+    txt(svg,m.l-8,yy+4,idxMode?nf.format(v):(v?axisLabel(v):'0'),{class:'tick','text-anchor':'end'});}
+  YEARS.forEach((y,i)=>txt(svg,xs(i),H-8,y,{class:'tick','text-anchor':'middle'}));
+  const cross=el('line',{x1:0,x2:0,y1:m.t,y2:m.t+ih,stroke:css('--axis'),'stroke-width':1,visibility:'hidden'},svg);
+  series.forEach(s=>{
+    el('path',{d:s.v.map((v,i)=>(i?'L':'M')+xs(i)+','+ys(v)).join(''),fill:'none',stroke:s.c,'stroke-width':2,'stroke-linejoin':'round','stroke-linecap':'round'},svg);
+    s.v.forEach((v,i)=>el('circle',{cx:xs(i),cy:ys(v),r:i===L?5:3.5,fill:s.c,stroke:css('--surface'),'stroke-width':2},svg));
+  });
+  // 끝 라벨: 겹치지 않게 위아래 간격 확보
+  const ends=series.map(s=>({s,y:ys(s.v[L])})).sort((a,b)=>a.y-b.y), gap=14;
+  for(let i=1;i<ends.length;i++) if(ends[i].y-ends[i-1].y<gap) ends[i].y=ends[i-1].y+gap;
+  const over=ends[ends.length-1].y-(m.t+ih); if(over>0) ends.forEach(e=>e.y-=over);
+  ends.forEach(e=>{const ly=ys(e.s.v[L]);
+    if(Math.abs(e.y-ly)>2) el('line',{x1:xs(L)+6,y1:ly,x2:xs(L)+12,y2:e.y,stroke:css('--axis'),'stroke-width':1},svg);
+    txt(svg,xs(L)+14,e.y+4,`${e.s.n} ${idxMode?nf.format(e.s.v[L]):man(e.s.v[L])}`,{class:'val'});});
+  const band=iw/L;
+  YEARS.forEach((y,i)=>{
+    const hit=el('rect',{x:xs(i)-band/2,y:m.t,width:band,height:ih,class:'hit'},svg);
+    bindTip(hit,e=>{cross.setAttribute('x1',xs(i));cross.setAttribute('x2',xs(i));cross.setAttribute('visibility','visible');
+      const lines=[...series].sort((a,b)=>b.raw[i]-a.raw[i]).map(s=>{const yoy=i?s.raw[i]/s.raw[i-1]-1:null;
+        return {k:s.n,c:s.c,v:(idxMode?nf.format(s.v[i])+' · ':'')+man(s.raw[i])+(yoy===null?'':` (${sgn(yoy)})`)};});
+      showTip(e,`${y}년${i?' · 괄호는 전년 대비':''}`,lines);});
+    hit.addEventListener('pointerleave',()=>cross.setAttribute('visibility','hidden'));
+  });
+}
+
 function renderAll(){
   document.querySelectorAll('#yearSeg button').forEach(b=>b.setAttribute('aria-pressed',b.id==='y'+state.year));
   document.querySelectorAll('#measSeg button').forEach(b=>b.setAttribute('aria-pressed',b.id==='m'+state.meas));
   hideTip(); save();
-  renderKPIs(); renderYearChart(); renderGrowth(); renderRank(); renderDetail(); renderTable();
+  renderKPIs(); renderYearChart(); renderGrowth(); renderRank(); renderDetail(); renderTop5(); renderTable();
 }
 buildFilters(); renderAll();
-let rt; new ResizeObserver(()=>{clearTimeout(rt); rt=setTimeout(()=>{renderYearChart(); renderGrowth(); renderRank(); renderDetail();},120);}).observe(document.querySelector('.wrap'));
+let rt; new ResizeObserver(()=>{clearTimeout(rt); rt=setTimeout(()=>{renderYearChart(); renderGrowth(); renderRank(); renderDetail(); renderTop5();},120);}).observe(document.querySelector('.wrap'));
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',renderAll);
 </script>
 </body>
@@ -522,7 +598,7 @@ except ValueError as e:
     st.stop()
 
 records = to_records(country_year)
-config = {"defaultCountry": DEFAULT_COUNTRY, "growthMin": GROWTH_MIN_TEU}
+config = {"defaultCountry": DEFAULT_COUNTRY, "growthMin": GROWTH_MIN_TEU, "top5Exclude": TOP5_EXCLUDE}
 html = (
     HTML_TEMPLATE
     .replace("__DATA__", json.dumps(records, ensure_ascii=False))
